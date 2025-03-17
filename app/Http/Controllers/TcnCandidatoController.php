@@ -3,9 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Models\TcnCandidato;
+use App\Models\TcnCertificacion;
+use App\Models\TcnEducacion;
+use App\Models\TcnExperienciaLaboral;
+use App\Models\TcnHabilidad;
+use App\Models\TcnIdioma;
+use App\Models\TcnReferencia;
 use App\Services\OpenAIService;
 use Illuminate\Http\Request;
 use Monarobase\CountryList\CountryListFacade as Countries;
+use Illuminate\Support\Facades\DB;
 
 class TcnCandidatoController extends Controller
 {
@@ -25,6 +32,8 @@ class TcnCandidatoController extends Controller
     public function store(Request $request)
     {
         try {
+
+            DB::beginTransaction(); // Iniciar transacción
             // Validación
             $validated = $request->validate([
                 'nombre' => 'required|string|max:100',
@@ -42,44 +51,84 @@ class TcnCandidatoController extends Controller
                 'foto' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
                 'curriculum' => 'required|file|mimes:pdf|max:2048',
             ]);
-
+    
+         
             $data = $request->except(['foto', 'curriculum']);
-
-      
+    
+         
             if ($request->hasFile('foto')) {
                 $data['foto'] = $request->file('foto')->store('fotos', 'public');
             }
-
+    
+           
             if ($request->hasFile('curriculum')) {
                 $file = $request->file('curriculum');
-
-       
-                $uploadResponse = $this->openAIService->uploadPDF($file);
-                $fileId = $uploadResponse['id'] ?? null;
-
-                if (!$fileId) {
-                    return back()->withErrors(['error' => 'Error al subir el archivo a OpenAI.']);
-                }
-
-               
-                $analysisResponse = $this->openAIService->analyzePDF($fileId);
-        
-                dd($analysisResponse);
-              
+                
+                // Aquí extraemos el texto del PDF
+                $pdfParser = new \Smalot\PdfParser\Parser();
+                $pdf = $pdfParser->parseFile($file->getRealPath());
+                $text = $pdf->getText();  // Extraer el texto
+    
+             
+                $analysisResponse = $this->openAIService->analyzeText($text); // Asumiendo que has cambiado el servicio
+    
+            
+                $analysisContent = $analysisResponse['choices'][0]['message']['content'] ?? 'Análisis no disponible';
+    
+             
+                $data['curriculum_analysis'] = $analysisContent;
+    
+             
                
             }
+    
+            $candidato = TcnCandidato::create($data);
 
-       
-            TcnCandidato::create($data);
+             // Guardar referencias
+        foreach ($analysisContent['referencias'] ?? [] as $ref) {
+            TcnReferencia::create(array_merge($ref, ['candidato_id' => $candidato->id]));
+        }
 
+        // Guardar certificaciones
+        foreach ($analysisContent['certificaciones'] ?? [] as $cert) {
+            TcnCertificacion::create(array_merge($cert, ['candidato_id' => $candidato->id]));
+        }
+
+        // Guardar educación
+        foreach ($analysisContent['educacion'] ?? [] as $edu) {
+            TcnEducacion::create(array_merge($edu, ['candidato_id' => $candidato->id]));
+        }
+
+        // Guardar experiencia laboral
+        foreach ($analysisContent['experiencia_laboral'] ?? [] as $exp) {
+            TcnExperienciaLaboral::create(array_merge($exp, ['candidato_id' => $candidato->id]));
+        }
+
+        // Guardar habilidades
+        foreach ($analysisContent['habilidades'] ?? [] as $hab) {
+            TcnHabilidad::create(array_merge($hab, ['candidato_id' => $candidato->id]));
+        }
+
+        // Guardar idiomas
+        foreach ($analysisContent['idiomas'] ?? [] as $idioma) {
+            TcnIdioma::create(array_merge($idioma, ['candidato_id' => $candidato->id]));
+        }
+
+        DB::commit(); // Confirmar transacción
+    
+            
             return redirect()->route('informacion')->with('success', 'Gracias por registrarte. Hemos recibido tu información correctamente.');
-
+    
         } catch (\Illuminate\Validation\ValidationException $e) {
+          
             return back()->withErrors($e->validator)->withInput();
         } catch (\Exception $e) {
+         
             return back()->withErrors(['error' => 'Ha ocurrido un error al procesar tu registro.'])->withInput();
         }
     }
+    
+
 
 
     public function show($id)
